@@ -84,6 +84,7 @@ from jax.interpreters import pxla
 from jax.interpreters import ad
 from jax.interpreters import batching
 from jax.interpreters import masking
+from jax.experimental.array import Array
 
 from jax._src.config import (
     flags, config, bool_env,
@@ -1876,10 +1877,37 @@ class PmapCallInfo(NamedTuple):
   local_axis_size: int
   global_arg_shapes_flat: Sequence[Optional[Tuple[int, ...]]]
   out_axes_thunk: HashableFunction
+  devices: Optional[Sequence[xc.Device]]
+
+
+def _check_in_pmap_sharding_with_arrays(args, in_axes_flat, in_devices):
+  if not args:
+    return
+
+  first_arr_devices = args[0].sharding.devices
+  for a, i in safe_zip(args, in_axes_flat):
+    arr_sharding = a.sharding.sharded_on_dim
+    arr_devices = a.sharding.devices
+    if arr_sharding != i:
+      raise ValueError('Array and pmap sharding does not match. Got pmap '
+                       f'sharding: {i}, Array sharding: {arr_sharding} for '
+                       f'arg: {a}')
+    if (in_devices is not None and
+        arr_devices is not None and
+        not np.array_equal(arr_devices, np.array(in_devices))):
+      raise ValueError('Devices passed to pmap and Array should be equal. '
+                       f'Got pmap devices: {devices}, Array devices: '
+                       f'{arr_devices} for arg: {a}')
+    if (in_devices is None and
+        not np.array_equal(arr_devices, first_arr_devices)):
+      raise ValueError('Devices of all `Array` inputs should be the same. '
+                       f'Got array device: {arr_devices}, '
+                       f'another array device: {first_arr_devices}')
+  return first_arr_devices
 
 
 def _prepare_pmap(fun, in_axes, out_axes, static_broadcasted_tuple,
-                  donate_tuple, global_arg_shapes, args, kwargs):
+                  donate_tuple, global_arg_shapes, devices, args, kwargs):
   f = lu.wrap_init(fun)
   if static_broadcasted_tuple:
     if max(static_broadcasted_tuple) >= len(args):
@@ -1923,6 +1951,14 @@ def _prepare_pmap(fun, in_axes, out_axes, static_broadcasted_tuple,
 
   flat_fun, out_tree = flatten_fun(f, in_tree)
 
+  if config.jax_array:
+    if any(not isinstance(a, Array) for a in args):
+      raise ValueError('All arguments to pmap when `config.jax_array` is '
+                       'enabled should be `Array`s.')
+    arr_devices = _check_in_pmap_sharding_with_arrays(args, in_axes_flat, devices)
+    if devices is None and arr_devices is not None:
+      devices = arr_devices
+
   if any(out_axis is None for out_axis in tree_flatten(out_axes)):
     raise NotImplementedError("None out_axes in pmap are not supported yet")
   # NOTE: We don't put out_tree() in the closure, because it's (1) non-hashable,
@@ -1954,7 +1990,8 @@ def _prepare_pmap(fun, in_axes, out_axes, static_broadcasted_tuple,
                       in_axes_flat=in_axes_flat,
                       local_axis_size=local_axis_size,
                       global_arg_shapes_flat=global_arg_shapes_flat,
-                      out_axes_thunk=out_axes_thunk)
+                      out_axes_thunk=out_axes_thunk,
+                      devices=None if devices is None else tuple(devices))
 
 
 def _get_f_mapped(
@@ -1973,11 +2010,11 @@ def _get_f_mapped(
   def pmap_f(*args, **kwargs):
     p = _prepare_pmap(
         fun, in_axes, out_axes, static_broadcasted_tuple, donate_tuple,
-        global_arg_shapes, args, kwargs)
+        global_arg_shapes, devices, args, kwargs)
     out = pxla.xla_pmap(
         p.flat_fun, *p.flat_args, backend=backend, axis_name=axis_name,
         axis_size=p.local_axis_size, global_axis_size=axis_size,
-        devices=None if devices is None else tuple(devices),
+        devices=p.devices,
         in_axes=p.in_axes_flat, out_axes_thunk=p.out_axes_thunk,
         name=p.flat_fun.__name__, donated_invars=p.donated_invars,
         global_arg_shapes=p.global_arg_shapes_flat)
@@ -2171,12 +2208,12 @@ def _pmap_lower(fun, axis_name, in_axes, out_axes, static_broadcasted_tuple,
     """
     p = _prepare_pmap(
         fun, in_axes, out_axes, static_broadcasted_tuple, donate_tuple,
-        global_arg_shapes, args, kwargs)
+        global_arg_shapes, devices, args, kwargs)
     abstract_args = list(map(xla.abstractify, p.flat_args))
     computation = pxla.lower_parallel_callable(
         p.flat_fun, backend, axis_name,
         axis_size=p.local_axis_size, global_axis_size=axis_size,
-        devices=None if devices is None else tuple(devices),
+        devices=p.devices,
         name=p.flat_fun.__name__,
         in_axes=p.in_axes_flat,
         out_axes_thunk=p.out_axes_thunk,

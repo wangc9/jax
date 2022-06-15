@@ -169,6 +169,13 @@ class PmapSharding(XLACompatibleSharding):
   def device_indices(self, device: Device, global_shape: Shape) -> Optional[Index]:
     return self.devices_indices_map(global_shape)[device]
 
+  @pxla.maybe_cached_property
+  def sharded_on_dim(self):
+    for i, s in enumerate(self.sharding_spec.sharding):
+      if isinstance(s, pxla.Unstacked):
+        return i
+    return None
+
   @cache()
   def devices_indices_map(
       self, global_shape: Shape) -> Mapping[Device, Optional[Index]]:

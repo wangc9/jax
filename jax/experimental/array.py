@@ -22,7 +22,6 @@ from jax import core
 from jax._src.config import config
 from jax._src.util import prod
 from jax._src.lib import xla_client as xc
-from jax._src.api import device_put
 from jax.interpreters import pxla, xla
 from jax.experimental.sharding import (Sharding, SingleDeviceSharding,
                                        XLACompatibleSharding, MeshPspecSharding)
@@ -215,6 +214,8 @@ class Array:
 
 def make_array_from_callback(shape: Shape, sharding: Sharding,
                              data_callback: Callable[[Optional[Index]], ArrayLike]) -> Array:
+  from jax._src.api import device_put
+
   dbs = [
       device_put(data_callback(sharding.device_indices(device, shape)), device)
       for device in sharding.addressable_devices
