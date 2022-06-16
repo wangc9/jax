@@ -18,6 +18,7 @@ from absl.testing import parameterized
 import numpy as np
 
 import jax
+import jax.numpy as jnp
 from jax._src import test_util as jtu
 from jax._src.lib import xla_client as xc
 from jax._src.util import prod
@@ -65,6 +66,27 @@ class JaxArrayTest(jtu.JaxTestCase):
       input_shape = (8, 2)
       arr, _ = create_array(
           input_shape, sharding.MeshPspecSharding(global_mesh, P('x', 'y')))
+      arr.delete()
+      with self.assertRaisesRegex(ValueError, 'Array has been deleted.'):
+        arr._check_if_deleted()
+      self.assertIsNone(arr._npy_value)
+      self.assertIsNone(arr._arrays)
+
+  def test_device_put(self):
+    with jax._src.config.jax_array(True):
+      numpy_array = np.array([1, 2, 3])
+      arr = jax.device_put(numpy_array, jax.devices()[0])
+      self.assertIsInstance(arr.sharding, sharding.SingleDeviceSharding)
+      self.assertArraysEqual(arr, numpy_array)
+      self.assertEqual(arr._committed, True)
+      for i in arr.addressable_shards:
+        self.assertArraysEqual(i.data, numpy_array)
+        self.assertEqual(i.device, jax.devices()[0])
+        self.assertEqual(i.index, (slice(None),))
+
+  def test_device_put_array_delete(self):
+    with jax._src.config.jax_array(True):
+      arr = jax.device_put(np.array([1, 2, 3]), jax.devices()[0])
       arr.delete()
       with self.assertRaisesRegex(ValueError, 'Array has been deleted.'):
         arr._check_if_deleted()

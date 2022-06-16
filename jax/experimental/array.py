@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import numpy as np
 from typing import Sequence, Tuple, Callable, Union, Optional, cast
 
@@ -25,7 +24,7 @@ from jax._src.lib import xla_client as xc
 from jax._src.api import device_put
 from jax.interpreters import pxla, xla
 from jax.experimental.sharding import (Sharding, SingleDeviceSharding,
-                                       XLACompatibleSharding, MeshPspecSharding)
+                                       XLACompatibleSharding)
 
 Shape = Tuple[int, ...]
 Device = xc.Device
@@ -80,9 +79,14 @@ class Array:
   # TODO(yashkatariya): Add __slots__ here.
 
   def __init__(self, shape: Shape, sharding: Sharding,
-               arrays: Sequence[DeviceArray], committed: bool):
+               arrays: Union[Sequence[DeviceArray], Sequence[Array]], committed: bool):
     self._shape = shape
     self._sharding = sharding
+    # Extract DeviceArrays from arrays with `SingleDeviceSharding` to keep the
+    # code handling `self._arrays` simpler.
+    # TODO(yashkatariya): This will be slower as it will happen during
+    # `__init__` on single controller environment. Make it lazy.
+    arrays = [a if isinstance(a, DeviceArray) else a._arrays[0] for a in arrays]
     self._arrays = arrays
     # See https://jax.readthedocs.io/en/latest/faq.html#controlling-data-and-computation-placement-on-devices
     # for what committed means.
@@ -215,11 +219,11 @@ class Array:
 
 def make_array_from_callback(shape: Shape, sharding: Sharding,
                              data_callback: Callable[[Optional[Index]], ArrayLike]) -> Array:
-  dbs = [
+  arrays = [
       device_put(data_callback(sharding.device_indices(device, shape)), device)
       for device in sharding.addressable_devices
   ]
-  return Array(shape, sharding, dbs, committed=True)
+  return Array(shape, sharding, arrays, committed=True)
 
 
 core.pytype_aval_mappings[Array] = lambda x: core.ShapedArray(x.shape, x.dtype)
