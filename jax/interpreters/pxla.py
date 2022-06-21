@@ -530,6 +530,12 @@ global_result_handlers: Dict[Tuple[Type[core.AbstractValue], OutputType], PxlaRe
 _USE_CPP_SDA = True
 
 
+def _create_pmap_sharding_spec(aval):
+  sharded_aval = aval.update(shape=aval.shape[1:])
+  return _pmap_sharding_spec(aval.shape[0], aval.shape[0], 1, None,
+                             sharded_aval, 0)
+
+
 def make_sharded_device_array(
     aval: ShapedArray,
     sharding_spec: Optional[ShardingSpec],
@@ -552,9 +558,7 @@ def make_sharded_device_array(
     indices: For caching purposes, will be computed if `None`.
   """
   if sharding_spec is None:
-    sharded_aval = aval.update(shape=aval.shape[1:])
-    sharding_spec = _pmap_sharding_spec(aval.shape[0], aval.shape[0], 1, None,
-                                        sharded_aval, 0)
+    sharding_spec = _create_pmap_sharding_spec(aval)
 
   if indices is None:
     indices = spec_to_indices(aval.shape, sharding_spec)
